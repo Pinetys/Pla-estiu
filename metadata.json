@@ -1,0 +1,6 @@
+{
+  "name": "Pinetys Grind",
+  "description": "Generador de planes de entrenamiento de baloncesto personalizados para el verano, con calendario interactivo, modo offline, sincronización automática, tabla de clasificación y notificaciones.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
