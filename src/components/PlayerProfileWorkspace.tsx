@@ -2103,7 +2103,9 @@ export default function PlayerProfileWorkspace({
                                     planSummary += `\n... ¡y más semanas de drills de alto rendimiento!\n`;
                                   }
                                   
-                                  planSummary += `\n📲 Accede aquí a tu libreta digital para marcar tus tareas diarias completas y entrar en las clasificaciones: ${window.location.origin}\n\n`;
+                                  const shareBaseUrl = typeof window !== "undefined" ? window.location.href.split('?')[0] : "";
+                                  const playerShareUrl = `${shareBaseUrl}?player=${encodeURIComponent(userName)}&view=player`;
+                                  planSummary += `\n📲 Accede aquí a tu libreta digital para marcar tus tareas diarias completas y entrar en las clasificaciones: ${playerShareUrl}\n\n`;
                                   planSummary += `¡Vamos a romperla en la cancha! ⚡🏀`;
                                   
                                   return `https://api.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(planSummary)}`;
