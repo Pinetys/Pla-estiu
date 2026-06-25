@@ -238,14 +238,78 @@ export default function App() {
     }
   }, [isPlayerViewMode, activeTab]);
 
-  const [ageGroup, setAgeGroup] = useState<string>("15-17");
-  const [selectedDays, setSelectedDays] = useState<string[]>(["Lunes", "Miércoles", "Viernes"]);
-  const [focusAreas, setFocusAreas] = useState<string[]>(["tiro", "bote", "agilidad", "resistencia", "finalizaciones", "kobe"]);
-  const [sessionDurationHours, setSessionDurationHours] = useState<number>(2);
-  const [weeksCount, setWeeksCount] = useState<number>(4);
-  const [playerRole, setPlayerRole] = useState<string>("all-round");
-  const [trainingMode, setTrainingMode] = useState<string>("solo");
-  const [intensityLevel, setIntensityLevel] = useState<string>("medium");
+  const [ageGroup, setAgeGroup] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const val = params.get("age");
+      if (val) return val;
+    }
+    return "15-17";
+  });
+
+  const [selectedDays, setSelectedDays] = useState<string[]>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const val = params.get("days");
+      if (val) return val.split(",");
+    }
+    return ["Lunes", "Miércoles", "Viernes"];
+  });
+
+  const [focusAreas, setFocusAreas] = useState<string[]>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const val = params.get("focus");
+      if (val) return val.split(",");
+    }
+    return ["tiro", "bote", "agilidad", "resistencia", "finalizaciones", "kobe"];
+  });
+
+  const [sessionDurationHours, setSessionDurationHours] = useState<number>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const val = params.get("hours");
+      if (val) return parseFloat(val);
+    }
+    return 2;
+  });
+
+  const [weeksCount, setWeeksCount] = useState<number>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const val = params.get("weeks");
+      if (val) return parseInt(val, 10);
+    }
+    return 4;
+  });
+
+  const [playerRole, setPlayerRole] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const val = params.get("role");
+      if (val) return val;
+    }
+    return "all-round";
+  });
+
+  const [trainingMode, setTrainingMode] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const val = params.get("mode");
+      if (val) return val;
+    }
+    return "solo";
+  });
+
+  const [intensityLevel, setIntensityLevel] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const val = params.get("intensity");
+      if (val) return val;
+    }
+    return "medium";
+  });
+
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
 
   // States for saving and sending the plan to the player
@@ -328,8 +392,66 @@ export default function App() {
   useEffect(() => {
     fetchLeaderboard();
     fetchObjectives();
-    generatePlan(true); // load default or cached plan
+    syncAndGetCoachPlans();
   }, []);
+
+  const syncAndGetCoachPlans = async () => {
+    try {
+      // Find current player name if any
+      const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+      const urlPlayer = params ? params.get("player") : "";
+      const activePlayerName = urlPlayer || userName;
+
+      let fetchedPlans: Record<string, any> = {};
+      const savedPlans = localStorage.getItem("hoops_player_plans");
+      
+      if (savedPlans) {
+        const parsedPlans = JSON.parse(savedPlans);
+        if (Object.keys(parsedPlans).length > 0) {
+          const response = await fetch("/api/coach/plans/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ plans: parsedPlans })
+          });
+          const data = await response.json();
+          if (data.success && data.plans) {
+            fetchedPlans = data.plans;
+          }
+        }
+      }
+      
+      if (Object.keys(fetchedPlans).length === 0) {
+        const res = await fetch("/api/coach/plans");
+        const data = await res.json();
+        if (data.success && data.plans) {
+          fetchedPlans = data.plans;
+        }
+      }
+      
+      if (Object.keys(fetchedPlans).length > 0) {
+        setPlayerPlans(fetchedPlans);
+        localStorage.setItem("hoops_player_plans", JSON.stringify(fetchedPlans));
+        
+        // If there's an active player, and we have their customized plan, set it!
+        if (activePlayerName) {
+          const matchingPlan = fetchedPlans[activePlayerName.toLowerCase()];
+          if (matchingPlan) {
+            setTrainingPlan(matchingPlan);
+            if (matchingPlan.weeks && matchingPlan.weeks.length > 0 && matchingPlan.weeks[0].days.length > 0) {
+              setSelectedDayTab(matchingPlan.weeks[0].days[0].dayName);
+            }
+            // Successfully loaded the actual assigned/customized plan! No need to run generatePlan.
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to sync coach plans", e);
+    }
+    
+    // Fallback if no matching saved plan exists for this player yet
+    generatePlan(true);
+  };
 
   const handleToggleDaySelection = (day: string) => {
     if (selectedDays.includes(day)) {
@@ -350,7 +472,69 @@ export default function App() {
       const res = await fetch("/api/leaderboard");
       const data = await res.json();
       if (data.success) {
-        setLeaderboard(data.leaderboard);
+        if (data.leaderboard.length > 0) {
+          setLeaderboard(data.leaderboard);
+          localStorage.setItem("hoops_backup_leaderboard", JSON.stringify(data.leaderboard));
+        } else {
+          // Server is empty (e.g. freshly restarted on Render). Check local backup to restore!
+          const backup = localStorage.getItem("hoops_backup_leaderboard");
+          if (backup) {
+            try {
+              const parsedBackup = JSON.parse(backup);
+              if (parsedBackup && parsedBackup.length > 0) {
+                const restoreRes = await fetch("/api/leaderboard/restore", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ leaderboard: parsedBackup })
+                });
+                const restoreData = await restoreRes.json();
+                if (restoreData.success) {
+                  setLeaderboard(restoreData.leaderboard);
+                  data.leaderboard = restoreData.leaderboard; // Update local variable for next checks
+                }
+              }
+            } catch (err) {
+              console.warn("Failed to restore leaderboard from backup", err);
+            }
+          } else {
+            setLeaderboard([]);
+          }
+        }
+
+        // Synchronize active player stats between mobile and backend
+        if (userName) {
+          const matchedPlayer = data.leaderboard.find(
+            (p: any) => p.name.toLowerCase() === userName.toLowerCase()
+          );
+          if (matchedPlayer) {
+            setUserPoints(matchedPlayer.points);
+            setUserDrillsCount(matchedPlayer.drillsCompleted);
+            if (matchedPlayer.completedDrills) {
+              setCompletedDrillIds(matchedPlayer.completedDrills);
+            }
+          } else if (userPoints > 0) {
+            // Re-register active player on server to restore their local stats automatically
+            try {
+              const regRes = await fetch("/api/leaderboard/player", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  name: userName,
+                  avatar: "🏀",
+                  points: userPoints,
+                  drillsCompleted: userDrillsCount
+                })
+              });
+              const regData = await regRes.json();
+              if (regData.success) {
+                setLeaderboard(regData.leaderboard);
+                localStorage.setItem("hoops_backup_leaderboard", JSON.stringify(regData.leaderboard));
+              }
+            } catch (err) {
+              console.warn("Failed to self-register player on server", err);
+            }
+          }
+        }
       }
     } catch (e) {
       console.warn("Could not load leaderboard from API, offline fallback applies.", e);
@@ -376,6 +560,13 @@ export default function App() {
     setUserDrillsCount(drillsCompleted);
     addNotification("👤 Jugador Activo Cambiado", `Ahora estás diseñando el plan de entrenamiento para: ${name}.`);
     
+    const matchedPlayer = leaderboard.find(p => p.name.toLowerCase() === name.toLowerCase());
+    if (matchedPlayer && matchedPlayer.completedDrills) {
+      setCompletedDrillIds(matchedPlayer.completedDrills);
+    } else {
+      setCompletedDrillIds({});
+    }
+
     // Load player specific plan
     const playerPlan = playerPlans[name.toLowerCase()];
     if (playerPlan) {
@@ -463,6 +654,41 @@ export default function App() {
     if (isGenerating) return;
     setIsGenerating(true);
 
+    // Check if we have URL query parameters to load customized plan
+    let currentAgeGroup = ageGroup;
+    let currentDays = selectedDays;
+    let currentFocus = focusAreas;
+    let currentDuration = sessionDurationHours;
+    let currentWeeks = weeksCount;
+    let currentRole = playerRole;
+    let currentIntensity = intensityLevel;
+    let currentMode = trainingMode;
+    let hasUrlParams = false;
+
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("view") === "player") {
+        hasUrlParams = true;
+        const playerParam = params.get("player");
+        const age = params.get("age");
+        if (age) currentAgeGroup = age;
+        const weeks = params.get("weeks");
+        if (weeks) currentWeeks = parseInt(weeks, 10);
+        const days = params.get("days");
+        if (days) currentDays = days.split(",");
+        const focus = params.get("focus");
+        if (focus) currentFocus = focus.split(",");
+        const role = params.get("role");
+        if (role) currentRole = role;
+        const intensity = params.get("intensity");
+        if (intensity) currentIntensity = intensity;
+        const hours = params.get("hours");
+        if (hours) currentDuration = parseFloat(hours);
+        const mode = params.get("mode");
+        if (mode) currentMode = mode;
+      }
+    }
+
     // Validate that a player is selected before generating!
     if (!userName && !isInitialSeed) {
       addNotification(
@@ -474,7 +700,7 @@ export default function App() {
     }
 
     // Initial default caching
-    if (isInitialSeed) {
+    if (isInitialSeed && !hasUrlParams) {
       const cached = localStorage.getItem("hoops_cached_plan");
       if (cached) {
         const parsed = JSON.parse(cached) as TrainingPlan;
@@ -492,15 +718,15 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ageGroup,
-          daysOfWeek: selectedDays,
-          focusAreas,
-          sessionDurationHours,
+          ageGroup: currentAgeGroup,
+          daysOfWeek: currentDays,
+          focusAreas: currentFocus,
+          sessionDurationHours: currentDuration,
           customPrompt,
-          weeksCount,
-          playerRole,
-          trainingMode,
-          intensityLevel,
+          weeksCount: currentWeeks,
+          playerRole: currentRole,
+          trainingMode: currentMode,
+          intensityLevel: currentIntensity,
         })
       });
 
@@ -517,6 +743,12 @@ export default function App() {
           setPlayerPlans((prev) => {
             const next = { ...prev, [userName.toLowerCase()]: data.plan };
             localStorage.setItem("hoops_player_plans", JSON.stringify(next));
+            // Sync with backend server
+            fetch("/api/coach/plan", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ playerName: userName, plan: data.plan })
+            }).catch(err => console.warn("Failed to sync plan to server", err));
             return next;
           });
         }
@@ -530,7 +762,7 @@ export default function App() {
 
         addNotification(
           "📋 Plan Creado Exitosamente",
-          `Nuevo plan de entrenamiento para U-${ageGroup} generado basados en metodologías de campamentos americanos.`
+          `Nuevo plan de entrenamiento para U-${currentAgeGroup} generado basados en metodologías de campamentos americanos.`
         );
       } else {
         throw new Error("La IA no devolvió un plan estructurado adaptable.");
@@ -538,9 +770,9 @@ export default function App() {
     } catch (e) {
       console.warn("API offline or unavailable, generating custom plan locally with biomechanical compiler", e);
       
-      const activeDays = selectedDays.length > 0 ? selectedDays : ["Lunes", "Miércoles", "Viernes"];
-      const activeCategories = focusAreas.length > 0 ? focusAreas : ["tiro", "bote"];
-      const activeWeeks = weeksCount || 2;
+      const activeDays = currentDays.length > 0 ? currentDays : ["Lunes", "Miércoles", "Viernes"];
+      const activeCategories = currentFocus.length > 0 ? currentFocus : ["tiro", "bote"];
+      const activeWeeks = currentWeeks || 2;
 
       // Define presets for high-fidelity drills
       const drillDatabase: Record<string, Array<{title: string, duration: string, sets: string, description: string}>> = {
@@ -802,7 +1034,7 @@ export default function App() {
             ][(w - 1) % 6];
 
             dayDrills.push({
-              id: `${cat}_${w}_${Date.now()}_${index}_${dayIdx}`,
+              id: `${cat}_w${w}_idx${index}_d${dayIdx}`,
               title: `${drillData.title} (Fase ${w})`,
               category: cat.charAt(0).toUpperCase() + cat.slice(1),
               duration: drillData.duration,
@@ -827,7 +1059,7 @@ export default function App() {
             ][(w - 1) % 4];
 
             dayDrills.push({
-              id: `filler_${w}_${Date.now()}_${dayDrills.length}_${dayIdx}`,
+              id: `filler_w${w}_idx${dayDrills.length}_d${dayIdx}`,
               title: `${drillData.title} (Volumen Progresivo)`,
               category: fillerCat.charAt(0).toUpperCase() + fillerCat.slice(1),
               duration: drillData.duration,
@@ -860,6 +1092,12 @@ export default function App() {
         setPlayerPlans((prev) => {
           const next = { ...prev, [userName.toLowerCase()]: localPlan };
           localStorage.setItem("hoops_player_plans", JSON.stringify(next));
+          // Sync with backend server
+          fetch("/api/coach/plan", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ playerName: userName, plan: localPlan })
+          }).catch(err => console.warn("Failed to sync plan to server", err));
           return next;
         });
       }
@@ -901,7 +1139,8 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           playerName: userName,
-          items: offlineQueue
+          items: offlineQueue,
+          completedDrillIds: completedDrillIds
         })
       });
 
@@ -980,7 +1219,7 @@ export default function App() {
       };
 
       if (isOnline) {
-        sendDirectSync(loggedItem);
+        sendDirectSync(loggedItem, nextStates);
       } else {
         setOfflineQueue((prev) => [...prev, loggedItem]);
         addNotification(
@@ -993,17 +1232,22 @@ export default function App() {
       setUserPoints(Math.max(0, userPoints - drillPoints));
       setUserDrillsCount(Math.max(0, userDrillsCount - 1));
       addNotification("↩️ Ejercicio Desmarcado", `Se retiraron los puntos de "${drillTitle}".`);
+
+      if (isOnline) {
+        sendUndoSync(compositeKey, drillPoints, nextStates);
+      }
     }
   };
 
-  const sendDirectSync = async (completedItem: CompletedDrill) => {
+  const sendDirectSync = async (completedItem: CompletedDrill, updatedDrillIdsMap?: Record<string, boolean>) => {
     try {
       const response = await fetch("/api/leaderboard/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           playerName: userName,
-          items: [completedItem]
+          items: [completedItem],
+          completedDrillIds: updatedDrillIdsMap || completedDrillIds
         })
       });
       const data = await response.json();
@@ -1023,6 +1267,27 @@ export default function App() {
         "💾 Caída de Red Detectada",
         `Fallo al conectar. El progreso de "${completedItem.drillTitle}" se resguardó en modo Offline.`
       );
+    }
+  };
+
+  const sendUndoSync = async (compositeKey: string, drillPoints: number, updatedCompletedIds: Record<string, boolean>) => {
+    try {
+      const response = await fetch("/api/leaderboard/sync/undo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerName: userName,
+          compositeKey,
+          pointsToRemove: drillPoints,
+          completedDrillIds: updatedCompletedIds
+        })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setLeaderboard(data.leaderboard);
+      }
+    } catch (e) {
+      console.warn("Could not sync uncheck on server, retaining locally.", e);
     }
   };
 

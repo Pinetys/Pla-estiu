@@ -3,11 +3,12 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import fs from "fs";
 
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Initialize Gemini API
 const apiKey = process.env.GEMINI_API_KEY;
@@ -36,9 +37,11 @@ interface LeaderboardPlayer {
   points: number;
   drillsCompleted: number;
   lastActive: string;
+  completedDrills?: Record<string, boolean>;
 }
 
 let leaderboard: LeaderboardPlayer[] = [];
+let coachPlayerPlans: Record<string, any> = {};
 
 interface CustomObjective {
   id: string;
@@ -87,6 +90,48 @@ let objectives: CustomObjective[] = [
     deadline: "2026-06-25"
   }
 ];
+
+// Local File Storage Persistence
+const DATA_DIR = path.join(process.cwd(), "data");
+const LEADERBOARD_FILE = path.join(DATA_DIR, "leaderboard.json");
+const PLANS_FILE = path.join(DATA_DIR, "coachPlayerPlans.json");
+const OBJECTIVES_FILE = path.join(DATA_DIR, "objectives.json");
+
+function loadData() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (fs.existsSync(LEADERBOARD_FILE)) {
+      leaderboard = JSON.parse(fs.readFileSync(LEADERBOARD_FILE, "utf-8"));
+      console.log(`Loaded ${leaderboard.length} players from leaderboard backup.`);
+    }
+    if (fs.existsSync(PLANS_FILE)) {
+      coachPlayerPlans = JSON.parse(fs.readFileSync(PLANS_FILE, "utf-8"));
+      console.log(`Loaded ${Object.keys(coachPlayerPlans).length} player plans from backup.`);
+    }
+    if (fs.existsSync(OBJECTIVES_FILE)) {
+      objectives = JSON.parse(fs.readFileSync(OBJECTIVES_FILE, "utf-8"));
+      console.log(`Loaded ${objectives.length} custom objectives from backup.`);
+    }
+  } catch (err) {
+    console.error("Error loading persisted data, using defaults:", err);
+  }
+}
+
+function saveData() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(leaderboard, null, 2));
+    fs.writeFileSync(PLANS_FILE, JSON.stringify(coachPlayerPlans, null, 2));
+    fs.writeFileSync(OBJECTIVES_FILE, JSON.stringify(objectives, null, 2));
+    console.log("Database successfully synced to disk!");
+  } catch (err) {
+    console.error("Error saving persistent data:", err);
+  }
+}
 
 // Fallback plans in case GEMINI_API_KEY is not defined or fails, using authentic American basketball drills!
 const MOCK_PLANS: Record<string, any> = {
@@ -231,6 +276,7 @@ app.post("/api/objectives", (req, res) => {
   };
 
   objectives.unshift(newObjective);
+  saveData();
   res.json({ success: true, objectives });
 });
 
@@ -251,6 +297,7 @@ app.post("/api/leaderboard/player", (req, res) => {
   };
 
   leaderboard.push(newPlayer);
+  saveData();
   const sortedLeaderboard = [...leaderboard].sort((a, b) => b.points - a.points);
   res.json({ success: true, leaderboard: sortedLeaderboard });
 });
@@ -265,13 +312,25 @@ app.get("/api/leaderboard", (req, res) => {
 app.delete("/api/leaderboard/player/:id", (req, res) => {
   const { id } = req.params;
   leaderboard = leaderboard.filter(p => p.id !== id);
+  saveData();
+  const sortedLeaderboard = [...leaderboard].sort((a, b) => b.points - a.points);
+  res.json({ success: true, leaderboard: sortedLeaderboard });
+});
+
+// POST Restore complete leaderboard from client backup
+app.post("/api/leaderboard/restore", (req, res) => {
+  const { leaderboard: restoredLeaderboard } = req.body;
+  if (Array.isArray(restoredLeaderboard) && restoredLeaderboard.length > 0) {
+    leaderboard = restoredLeaderboard;
+    saveData();
+  }
   const sortedLeaderboard = [...leaderboard].sort((a, b) => b.points - a.points);
   res.json({ success: true, leaderboard: sortedLeaderboard });
 });
 
 // POST Sync Points / Exercises API (Handles offline queuing syncs)
 app.post("/api/leaderboard/sync", (req, res) => {
-  const { playerName, items } = req.body;
+  const { playerName, items, completedDrillIds } = req.body;
   // items is an array of completed drills, e.g. [{ drillId: string, drillTitle: string, points: 20 }]
   if (!playerName || !items || !Array.isArray(items)) {
     return res.status(400).json({ success: false, error: "Datos de sincronización inválidos." });
@@ -287,6 +346,12 @@ app.post("/api/leaderboard/sync", (req, res) => {
     p.points += pointsGained;
     p.drillsCompleted += drillsGained;
     p.lastActive = "¡Justo ahora!";
+    if (completedDrillIds) {
+      p.completedDrills = {
+        ...(p.completedDrills || {}),
+        ...completedDrillIds
+      };
+    }
   } else {
     // Add new user to the leaderboard
     p = {
@@ -295,7 +360,8 @@ app.post("/api/leaderboard/sync", (req, res) => {
       avatar: "⭐",
       points: 150 + pointsGained, // base 150 + synced points
       drillsCompleted: 5 + drillsGained,
-      lastActive: "¡Justo ahora!"
+      lastActive: "¡Justo ahora!",
+      completedDrills: completedDrillIds || {}
     };
     leaderboard.push(p);
   }
@@ -310,8 +376,59 @@ app.post("/api/leaderboard/sync", (req, res) => {
     });
   });
 
+  saveData();
   const sortedLeaderboard = [...leaderboard].sort((a, b) => b.points - a.points);
   res.json({ success: true, leaderboard: sortedLeaderboard, syncedPoints: pointsGained, updatedObjectives: objectives });
+});
+
+// POST Sync Undo API (Handles unselecting a drill)
+app.post("/api/leaderboard/sync/undo", (req, res) => {
+  const { playerName, compositeKey, pointsToRemove, completedDrillIds } = req.body;
+  if (!playerName) {
+    return res.status(400).json({ success: false, error: "Datos de sincronización inválidos." });
+  }
+
+  let p = leaderboard.find(player => player.name.toLowerCase() === playerName.toLowerCase());
+  if (p) {
+    p.points = Math.max(0, p.points - (pointsToRemove || 15));
+    p.drillsCompleted = Math.max(0, p.drillsCompleted - 1);
+    p.lastActive = "¡Justo ahora!";
+    if (completedDrillIds) {
+      p.completedDrills = completedDrillIds;
+    }
+  }
+
+  saveData();
+  const sortedLeaderboard = [...leaderboard].sort((a, b) => b.points - a.points);
+  res.json({ success: true, leaderboard: sortedLeaderboard });
+});
+
+// GET Coach Plans (Saves and synchronizes coach plans across devices)
+app.get("/api/coach/plans", (req, res) => {
+  res.json({ success: true, plans: coachPlayerPlans });
+});
+
+// POST Coach Plan for single player
+app.post("/api/coach/plan", (req, res) => {
+  const { playerName, plan } = req.body;
+  if (playerName && plan) {
+    coachPlayerPlans[playerName.toLowerCase()] = plan;
+  }
+  saveData();
+  res.json({ success: true, plans: coachPlayerPlans });
+});
+
+// POST Batch Sync Coach Plans (Used to merge local storage plans to server on first connection)
+app.post("/api/coach/plans/sync", (req, res) => {
+  const { plans } = req.body;
+  if (plans && typeof plans === "object") {
+    coachPlayerPlans = {
+      ...coachPlayerPlans,
+      ...plans
+    };
+  }
+  saveData();
+  res.json({ success: true, plans: coachPlayerPlans });
 });
 
 app.post("/api/plan/generate", async (req, res) => {
@@ -814,20 +931,27 @@ function adaptMockPlan(
         "Spot-Up Jumper Perimetral", "Step-Back de Separación Lateral", "Pull-Up Pro tras Drible", "Lanzamiento de Form Shooting Vertical",
         "Tiro en Suspensión con Elevación Corta", "Ray Allen Screen Lift Jumper", "Klay Thompson Corner Special", "Lanzamiento de Tres en Fatiga Extrema",
         "Elevación de Bloqueo Ciego", "Form Shooting Directo de Tablero", "Catch & Release Angular de Fase", "Reggie Miller Corner Off-Screen Jumper",
-        "Steve Nash Pull-Up on the Run", "Decelerando en Cono Jumper", "Fadeaway Lateral Estilo Kevin Durant", "Stephen Curry Star Out Series"
+        "Steve Nash Pull-Up on the Run", "Decelerando en Cono Jumper", "Fadeaway Lateral Estilo Kevin Durant", "Stephen Curry Star Out Series",
+        "Dame Time Logo Range Focus", "James Harden Step-Back Challenge", "Ray Allen Baseline Run and Shoot", "Dirk Nowitzki One-Legged Fadeaway",
+        "Miras de Precisión (Spot-Up Elite)", "Tiro con Oposición de Defensor Fantasma", "Drazen Petrovic Sprint Shooting", "Lanzamiento de Cuchara Pro"
       ],
       details: [
         "atendiendo la tracción de los metatarsos con codos fijos a 90 grados",
         "alineando con precisión quirúrgica el hombro dominante directo con el medio del aro",
         "con extensión e impulsión uniforme del codo terminando con un muñequeo suave de seda",
         "plantando firmemente los apoyos en paralelo bajo los hombros para una caída estable",
-        "sosteniendo el balance de espalda erguida evitando balanceos perjudiciales de cadera"
+        "sosteniendo el balance de espalda erguida evitando balanceos perjudiciales de cadera",
+        "manteniendo los dedos índices y medio apuntando al centro del aro tras soltar el balón",
+        "absorbiendo la fuerza del salto con rodillas alineadas para propiciar parábola perfecta",
+        "verificando que la mirada se fije en la parte frontal posterior del aro durante el vuelo"
       ],
       actions: [
         "amortiguar la recepción con punta de pies y tirar de inmediato",
         "cortar el perímetro en esprint corto, clavar el pivote guía y elevar el cuerpo",
         "ejecutar un amago técnico de desmarque para un tiro rápido en suspensión",
-        "encestar de forma fluida manteniendo la punta de los dedos colgando al final del vuelo"
+        "encestar de forma fluida manteniendo la punta de los dedos colgando al final del vuelo",
+        "recibir tras cortina, estabilizar el núcleo en fracción de segundo y asestar el tiro",
+        "sprintar de esquina a ala opuesta, pivotar en reversa y disparar sin vacilación"
       ]
     },
     bote: {
@@ -837,20 +961,26 @@ function adaptMockPlan(
         "Dribling de Salida Defensiva de Presión", "Spider Handles con Ritmo Sincopado", "Crossover entre Piernas Explosivo",
         "Bote de Retroceso Técnico", "Manejo Lateral de Balón en Desplazamiento", "Low-Drive Dribbling de Rotura",
         "Bote Cruzado de Escape Corto", "Cambios Estilo Base Armador", "Kyrie Irving Shifty Dribble", "Steve Nash Wrap-Around",
-        "Chris Paul Pocket Cross", "Deron Williams Crossover Challenge", "Luka Doncic Step-Back Handle"
+        "Chris Paul Pocket Cross", "Deron Williams Crossover Challenge", "Luka Doncic Step-Back Handle",
+        "Chris Paul Pocket-Pass Dribbling", "Kyrie Irving Chaos Handle", "Allen Iverson Crossover Special", "Tim Hardaway UTEP Two-Step",
+        "Dribling cruzado continuo con pelota de tenis", "Manejo Ciego con Gafas de Simulación", "Piques de Poder y Desborde Lateral Rapidísimo"
       ],
       details: [
         "bajando la posición centro-de-gravedad por debajo del nivel estándar de cadera",
         "golpeando con firmeza el esférico utilizando exclusivamente la yema de las manos",
         "sosteniendo el torso en tensión con cabeza arriba leyendo el tablero",
         "hundiendo el perfil de la bota contra el parqué para arranques inmediatos",
-        "controlando la cobertura esclava del balón usando el antebrazo opuesto activo"
+        "controlando la cobertura esclava del balón usando el antebrazo opuesto activo",
+        "empujando el bote contra la lona con fuerza de pistón vertical",
+        "manteniendo el control de espaldas a la presión fingiendo un pase lateral"
       ],
       actions: [
         "rebotar el cuero fuertemente contra el piso para maximizar el tiempo de reacción",
         "alternar alturas de pique forzando la pérdida de equilibrio virtual del rival",
         "ejecutar crossovers continuos combinados con fintas de entrada y salida",
-        "proteger el balón en giros cerrados amagando desbordes sobre la línea"
+        "proteger el balón en giros cerrados amagando desbordes sobre la línea",
+        "encadenar botes entre las piernas de manera ininterrumpida acelerando el conteo",
+        "combinar botes de retracción hacia atrás con arranques explosivos en velocidad"
       ]
     },
     agilidad: {
@@ -859,20 +989,24 @@ function adaptMockPlan(
         "Reaction Shuffle Defensivo de Banda", "Paso de Tijera en Escalera de Ritmo", "Freno de un Tiempo en Parada Seca", "Hips-Switch de Giro de Rodillas",
         "Laterales de Tensión Defensiva Cruzada", "Pivote de Fuerza y Escape de Bloqueo", "Circuito Slalom de Conos de Conexión", "Reaction Drill Multi-Target",
         "Desplazamiento Escalonado de Vallas Cortas", "Giro Tridimensional de Caderas", "Puntas de Fuego en Eje Frontal",
-        "Ladder High-Knees Sprint", "Cone Weave and Hip Swivel Drill", "L-Drill Transition Speed Challenge", "W-Drill Defensive Shuffler"
+        "Ladder High-Knees Sprint", "Cone Weave and Hip Swivel Drill", "L-Drill Transition Speed Challenge", "W-Drill Defensive Shuffler",
+        "Deslizamientos en Octágono de Tensión", "Frenos de Emergencia en Dos Tiempos", "Mamba Footwork Ladder Challenge", "Step-Over Lateral Hurdles"
       ],
       details: [
         "distribuyendo el centro de gravedad buscando estabilidad defensiva total",
         "afianzando los pies con resortes coordinativos sin tocar los divisores",
         "disipando la carga cinética flexionando con seguridad rodillas y espalda",
         "abriendo el compás de brazos para simular cobertura defensiva asfixiante",
-        "manteniendo cadencia isométrica para anticipar desbordes del atacante"
+        "manteniendo cadencia isométrica para anticipar desbordes del atacante",
+        "absorbiendo la inercia con zancadas cortas de frenado para proteger tobillos"
       ],
       actions: [
         "ejecutar pasadas rítmicas veloces tocando con precisión quirúrgica los rectángulos",
         "pivotar en un eje de 180 grados resguardando el hombro de contención",
         "variar de dirección súbitamente tras la señal virtual del silbato",
-        "deslizarse lateralmente empujando con la pierna retrasada para no cruzar tobillos"
+        "deslizarse lateralmente empujando con la pierna retrasada para no cruzar tobillos",
+        "efectuar saltos pliométricos rápidos sobre un pie con aterrizaje suave y balanceado",
+        "cambiar de cadencia al instante pasando de trote defensivo a sprint frontal"
       ]
     },
     resistencia: {
@@ -881,20 +1015,23 @@ function adaptMockPlan(
         "Esprints Perimetrales con Cambios del Silbato", "Resistencia Láctica de Cierre de Período", "Sprints de Retroceso Defensivo", "Circuito Láctico Prep School",
         "Suicidas de Cancha Completa con Freno", "Línea a Línea Suicidas de Velocidad", "Intervalos de Recuperación Activa", "Carrera de Conos en Zig-Zag Continuo",
         "Esprint de Ida y Vuelta con Autopase", "Intervalo Mamba de Desborde Continuo", "Resistencia de Presión Defensiva de Cancha Llena",
-        "17-In-A-Minute Baseline Sprint", "Gasser Side-to-Side Endurance", "Full-Court In-and-Out Reps", "Interval 35/15 Mamba Attack"
+        "17-In-A-Minute Baseline Sprint", "Gasser Side-to-Side Endurance", "Full-Court In-and-Out Reps", "Interval 35/15 Mamba Attack",
+        "Sprints Progresivos con Resistencia de Banda", "Carrera Fartlek Intermitente de Pista", "Simulacro de Prórroga a Ritmo Máximo"
       ],
       details: [
         "administrando la oxigenación mediante ciclos profundos de respiración nasal",
         "regulando la carga de esfuerzo de acuerdo a la escala RPE Borg óptima",
         "ejecutando zancadas fluidas balanceando dinámicamente los brazos contra el torso",
         "cayendo de forma elástica sobre los metatarsos para proteger las rodillas de impactos",
-        "manteniendo la compostura física a pesar de la acumulación de fatiga láctica"
+        "manteniendo la compostura física a pesar de la acumulación de fatiga láctica",
+        "exigiendo la máxima capacidad de recuperación con respiración abdominal pausada"
       ],
       actions: [
         "realizar esprints al tope de tu capacidad mecánica dominando el cansancio mental",
         "completar vueltas continuas sosteniendo un paso uniforme y erguido de juego",
         "recuperar aire trotando de espaldas con la mirada puesta en el aro opuesto",
-        "romper el ritmo con esprints explosivos de cono a cono deteniendo la carrera en seco"
+        "romper el ritmo con esprints explosivos de cono a cono deteniendo la carrera en seco",
+        "correr la cancha en oleadas sucesivas y lanzar tiros libres con pulso elevado"
       ]
     },
     finalizaciones: {
@@ -903,20 +1040,23 @@ function adaptMockPlan(
         "Bandeja de Choque en Doble Ritmo", "Parada de Dos Tiempos & Up-and-Under", "Finger-roll Sutil de Toque Alto", "Gancho Corto en Poste de Pivote",
         "Bandeja Pasada Invertida al Aro", "Mikan Drill Inverso de Fuerza", "Finalización de Flotadora con Finta", "Euro-Step Cruzado con Finta de Pase",
         "Drop-Step de Fuerza en Poste Bajo", "Mikan Drill de Dos Balones Sincronizados", "Entrada Acrobática tras Euro-Step de Reverso",
-        "Tony Parker Floater Series", "Bandeja de Fuerza con Choque de Escudo", "Ginobili Euro-Step Extension", "Rondo Fake Behind-Back Jumper"
+        "Tony Parker Floater Series", "Bandeja de Fuerza con Choque de Escudo", "Ginobili Euro-Step Extension", "Rondo Fake Behind-Back Jumper",
+        "Skyhook Tradicional Kareem Style", "Mikan Inverso con Tabla de Ritmo Ajustada", "Bandeja en Extensión Máxima Finger-roll"
       ],
       details: [
         "estabilizando el balón pegado al pecho con codos salientes de barrera",
         "amortiguando el peso en dos pies de forma conjunta para disipar forces de choque",
         "estirando el brazo atacante cerca de la esquina negra del cristal superior",
         "manteniendo el cuerpo firme suspendido para contrarrestar el contacto físico virtual",
-        "depositando el balón suavemente con las yemas para propiciar un rebote favorable"
+        "depositando el balón suavemente con las yemas para propiciar un rebote favorable",
+        "protegiendo el balón con el hombro opuesto levantando bien la rodilla interna"
       ],
       actions: [
         "encestar con toque dócil permitiendo que el cuero acaricie el parqué limpiamente",
         "atacar el poste con zancadas anchas y eludir los bloqueos de brazos defensivos",
         "conducir la rodilla arriba con ferocidad para propulsar el salto vertical",
-        "concluir con un gancho corto arqueando el esférico por encima del defensor"
+        "concluir con un gancho corto arqueando el esférico por encima del defensor",
+        "frenar en seco enfrente del aro, amagar la salida y finalizar en reversa con suavidad"
       ]
     },
     kobe: {
@@ -925,20 +1065,23 @@ function adaptMockPlan(
         "Mamba Handle Challenge de Tensión", "Kobe Footwork Layups Series", "Mamba Mentality Triple Threat", "Mamba Focus de Silbato de Hierro",
         "Kobe Bryant Mid-Post Fadeaway", "Kobe Bryant Sunset Elbow-to-Elbow Shooting Challenge", "Mamba Mentality Elite Handle",
         "Sunset Elbow Jumper Bryant Style", "Kobe Bryant Double Clutch Attack", "Mamba Focus con Fatiga Acumulada", "Fadeaway de Fuerza Estilo Kobe",
-        "Kobe Sunset Low Post Pivot", "Signature Shot-Fake and Jumper", "Sunset Triple Threat Attack"
+        "Kobe Sunset Low Post Pivot", "Signature Shot-Fake and Jumper", "Sunset Triple Threat Attack",
+        "Kobe Mamba Mental Elite 150 Aciertos", "Mamba Sunset 50-Spot-Up Challenge", "Mamba Bryant Crunch Time Free Throws"
       ],
       details: [
         "canalizando la legendaria e incansable mentalidad Mamba de excelencia sin límites",
         "sosteniendo de manera obligatoria el codo alineado a un ángulo exacto de 90 grados",
         "empujando las fronteras del cansancio para pulir decisiones técnicas en instantes decisivos",
         "perfeccionando la coordinación de apoyos con pivotes precisos en el poste medio",
-        "recreando el escenario mítico con el reloj de juego expirando en cada tiro"
+        "recreando el escenario mítico con el reloj de juego expirando en cada tiro",
+        "enfocando cada repetición técnica al máximo potencial con espíritu competitivo"
       ],
       actions: [
         "despachar un fadeaway suspendido ladeando con gracia el torso hacia atrás",
         "ejecutar un lanzamiento de media distancia inmutable ante la inercia física",
         "sostener el bote protegiendo con el hombro para clavar un quiebre de muñeca definitivo",
-        "clavar tiros consecutivos de media distancia sin permitirse ningún fallo técnico"
+        "clavar tiros consecutivos de media distancia sin permitirse ningún fallo técnico",
+        "penetrar driblando fuerte, frenar en pivote reverso y soltar una suspensión ladeada"
       ]
     }
   };
@@ -1130,6 +1273,9 @@ function adaptMockPlan(
 
 // Vite integration middleware
 async function startServer() {
+  // Load persistent data from disk
+  loadData();
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },

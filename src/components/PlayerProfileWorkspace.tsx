@@ -895,6 +895,18 @@ export default function PlayerProfileWorkspace({
             duration: "8 mins",
             sets: "4 series x 30 seg",
             description: "De pie, realiza botes continuos dibujando un ocho alrededor de tus piernas sin levantar la vista. Trabaja en la postura de base baja cargando el peso adecuadamente."
+          },
+          {
+            title: "Kyrie Irving Handle Shifty Combo",
+            duration: "12 mins",
+            sets: "5 series x 1 min",
+            description: "Combina in-and-out dribble con crossover rápido y drible entre las piernas cruzando de inmediato por la espalda. Mantén la postura ultra baja."
+          },
+          {
+            title: "Bote de Bolsillo con Sensor de Brazo",
+            duration: "10 mins",
+            sets: "4 series x 45 seg",
+            description: "Driblea alto y jala el balón hacia atrás simulando un pocket-dribble, usando tu brazo libre activo como escudo de protección contra el oponente."
           }
         ],
         tiro: [
@@ -909,6 +921,18 @@ export default function PlayerProfileWorkspace({
             duration: "15 mins",
             sets: "5 posiciones x 5 aciertos",
             description: "Recorrido en arco por 5 posiciones de media distancia. Recibe el autopase tirando con flexión coordinada y salto vertical controlado sin fatiga de hombros."
+          },
+          {
+            title: "Dame Time Logo Range Jumper",
+            duration: "15 mins",
+            sets: "4 series de 8 aciertos",
+            description: "Tiros lejanos de larga distancia (2 metros por detrás del arco de triples) cuidando lanzar con empuje coordinado y fuerza elástica de piernas."
+          },
+          {
+            title: "James Harden step-back lateral",
+            duration: "12 mins",
+            sets: "5 series x 6 aciertos",
+            description: "Driblea agresivamente hacia el canasto, clava los pies en dos apoyos seguidos, empuja el cuerpo lateralmente para ganar separación y asesta un tiro limpio."
           }
         ],
         resistencia: [
@@ -923,6 +947,12 @@ export default function PlayerProfileWorkspace({
             duration: "10 mins",
             sets: "3 series de 3 mins",
             description: "Bote de carrera continuo de canasta a canasta alternando cambios de dirección repentinos (en cruzado y por la espalda). Consumo calórico elevado."
+          },
+          {
+            title: "Suicidas Mamba 17-in-a-Minute",
+            duration: "15 mins",
+            sets: "3 series x 2 repeticiones",
+            description: "Recorre el largo completo de la cancha 17 veces en un lapso de 60 segundos sostenido para simular la fatiga muscular y mental extrema de un tiempo extra."
           }
         ],
         agilidad: [
@@ -937,6 +967,12 @@ export default function PlayerProfileWorkspace({
             duration: "8 mins",
             sets: "3 series x 8 saltos",
             description: "Saltos explosivos sobre un pie de lado a lado manteniendo el aterrizaje balanceado en el metatarso durante un segundo para ganar estabilidad articular y fuerza de frenado."
+          },
+          {
+            title: "Reaction Feet Multi-Pattern Ladders",
+            duration: "12 mins",
+            sets: "6 pasadas al tope",
+            description: "Rutina intensiva de cambios de ritmo rápidos en escalera de coordinación, alternando apoyos laterales rápidos y rotaciones completas de cadera."
           }
         ],
         finalizaciones: [
@@ -951,6 +987,12 @@ export default function PlayerProfileWorkspace({
             duration: "12 mins",
             sets: "4 series x 6 entradas",
             description: "Dribla con ímpetu desde triple, planta un primer apoyo fuerte en una dirección y cambia bruscamente la zancada lateral en el segundo paso para esquivar al defensor imaginario."
+          },
+          {
+            title: "Gancho Corto Skyhook de Pivote",
+            duration: "10 mins",
+            sets: "4 series de 8 encestes",
+            description: "Sostén tu pivote con firmeza en la pintura, levanta el hombro defensor y suelta el balón flotando con un gancho clásico sobre el canasto."
           }
         ],
         kobe: [
@@ -965,6 +1007,12 @@ export default function PlayerProfileWorkspace({
             duration: "15 mins",
             sets: "5 series x 4 recorridos",
             description: "Drible de drible bajo de increíble exigencia sorteando conos, finalizando en un step-back explosivo con fadeaway. Enfoque implacable de repetición."
+          },
+          {
+            title: "Post-Up Turnaround Kobe Fadeaway",
+            duration: "15 mins",
+            sets: "6 series x 5 encestes",
+            description: "Sostén el balón de espaldas al aro, amaga hacia el centro con el hombro, pivota en reversa hacia el perímetro ladeando levemente el torso para disparar un tiro en suspensión insoslayable."
           }
         ]
       };
@@ -2104,7 +2152,15 @@ export default function PlayerProfileWorkspace({
                                   }
                                   
                                   const shareBaseUrl = typeof window !== "undefined" ? window.location.href.split('?')[0] : "";
-                                  const playerShareUrl = `${shareBaseUrl}?player=${encodeURIComponent(userName)}&view=player`;
+                                  const playerShareUrl = `${shareBaseUrl}?player=${encodeURIComponent(userName)}&view=player` +
+                                    `&age=${encodeURIComponent(ageGroup)}` +
+                                    `&weeks=${weeksCount}` +
+                                    `&days=${encodeURIComponent(selectedDays.join(','))}` +
+                                    `&focus=${encodeURIComponent(focusAreas.join(','))}` +
+                                    `&role=${encodeURIComponent(playerRole)}` +
+                                    `&intensity=${encodeURIComponent(intensityLevel)}` +
+                                    `&hours=${sessionDurationHours}` +
+                                    `&mode=${encodeURIComponent(trainingMode)}`;
                                   planSummary += `\n📲 Accede aquí a tu libreta digital para marcar tus tareas diarias completas y entrar en las clasificaciones: ${playerShareUrl}\n\n`;
                                   planSummary += `¡Vamos a romperla en la cancha! ⚡🏀`;
                                   
