@@ -4,6 +4,8 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import fs from "fs";
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 
 dotenv.config();
 
@@ -91,35 +93,87 @@ let objectives: CustomObjective[] = [
   }
 ];
 
-// Local File Storage Persistence
+// Firebase Firestore persistent cloud storage
 const DATA_DIR = path.join(process.cwd(), "data");
 const LEADERBOARD_FILE = path.join(DATA_DIR, "leaderboard.json");
 const PLANS_FILE = path.join(DATA_DIR, "coachPlayerPlans.json");
 const OBJECTIVES_FILE = path.join(DATA_DIR, "objectives.json");
 
-function loadData() {
+let db: any = null;
+try {
+  const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+  if (fs.existsSync(configPath)) {
+    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    const firebaseApp = initializeApp({
+      apiKey: config.apiKey,
+      authDomain: config.authDomain,
+      projectId: config.projectId,
+      storageBucket: config.storageBucket,
+      messagingSenderId: config.messagingSenderId,
+      appId: config.appId
+    });
+    db = getFirestore(firebaseApp, config.firestoreDatabaseId);
+    console.log("Firebase Firestore initialized with custom database ID:", config.firestoreDatabaseId);
+  } else {
+    console.warn("firebase-applet-config.json not found, using memory/local backups");
+  }
+} catch (error) {
+  console.error("Failed to initialize Firebase SDK:", error);
+}
+
+async function loadData() {
+  try {
+    if (db) {
+      console.log("Fetching persistent data from Cloud Firestore...");
+      const leaderboardDoc = await getDoc(doc(db, "app_data", "leaderboard"));
+      if (leaderboardDoc.exists()) {
+        leaderboard = leaderboardDoc.data().players || [];
+        console.log(`Loaded ${leaderboard.length} players from Firestore.`);
+      }
+      
+      const plansDoc = await getDoc(doc(db, "app_data", "plans"));
+      if (plansDoc.exists()) {
+        coachPlayerPlans = plansDoc.data().coachPlayerPlans || {};
+        console.log(`Loaded ${Object.keys(coachPlayerPlans).length} player plans from Firestore.`);
+      }
+      
+      const objectivesDoc = await getDoc(doc(db, "app_data", "objectives"));
+      if (objectivesDoc.exists()) {
+        objectives = objectivesDoc.data().objectives || [];
+        console.log(`Loaded ${objectives.length} custom objectives from Firestore.`);
+      }
+    }
+  } catch (err) {
+    console.error("Error loading persisted data from Firestore, checking local backups...", err);
+  }
+
+  // Dual-shield backup: load from local files if memory lists are still empty
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    if (fs.existsSync(LEADERBOARD_FILE)) {
+    if (leaderboard.length === 0 && fs.existsSync(LEADERBOARD_FILE)) {
       leaderboard = JSON.parse(fs.readFileSync(LEADERBOARD_FILE, "utf-8"));
-      console.log(`Loaded ${leaderboard.length} players from leaderboard backup.`);
+      console.log(`Loaded ${leaderboard.length} players from local backup.`);
     }
-    if (fs.existsSync(PLANS_FILE)) {
+    if (Object.keys(coachPlayerPlans).length === 0 && fs.existsSync(PLANS_FILE)) {
       coachPlayerPlans = JSON.parse(fs.readFileSync(PLANS_FILE, "utf-8"));
-      console.log(`Loaded ${Object.keys(coachPlayerPlans).length} player plans from backup.`);
+      console.log(`Loaded ${Object.keys(coachPlayerPlans).length} player plans from local backup.`);
     }
-    if (fs.existsSync(OBJECTIVES_FILE)) {
-      objectives = JSON.parse(fs.readFileSync(OBJECTIVES_FILE, "utf-8"));
-      console.log(`Loaded ${objectives.length} custom objectives from backup.`);
+    if (objectives.length <= 3 && fs.existsSync(OBJECTIVES_FILE)) {
+      const localObjectives = JSON.parse(fs.readFileSync(OBJECTIVES_FILE, "utf-8"));
+      if (localObjectives.length > 0) {
+        objectives = localObjectives;
+        console.log(`Loaded ${objectives.length} custom objectives from local backup.`);
+      }
     }
   } catch (err) {
-    console.error("Error loading persisted data, using defaults:", err);
+    console.error("Error loading local backup files:", err);
   }
 }
 
-function saveData() {
+async function saveData() {
+  // 1. Immediately write to local file as an instant fail-safe
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -127,9 +181,21 @@ function saveData() {
     fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(leaderboard, null, 2));
     fs.writeFileSync(PLANS_FILE, JSON.stringify(coachPlayerPlans, null, 2));
     fs.writeFileSync(OBJECTIVES_FILE, JSON.stringify(objectives, null, 2));
-    console.log("Database successfully synced to disk!");
+    console.log("Local filesystem backups updated.");
   } catch (err) {
-    console.error("Error saving persistent data:", err);
+    console.error("Error saving local backups:", err);
+  }
+
+  // 2. Sync to Cloud Firestore asynchronously (no block on main thread)
+  if (db) {
+    try {
+      await setDoc(doc(db, "app_data", "leaderboard"), { players: leaderboard });
+      await setDoc(doc(db, "app_data", "plans"), { coachPlayerPlans: coachPlayerPlans });
+      await setDoc(doc(db, "app_data", "objectives"), { objectives: objectives });
+      console.log("Persistent Cloud Firestore successfully updated!");
+    } catch (err) {
+      console.error("Failed to sync data to Cloud Firestore:", err);
+    }
   }
 }
 
@@ -1273,8 +1339,8 @@ function adaptMockPlan(
 
 // Vite integration middleware
 async function startServer() {
-  // Load persistent data from disk
-  loadData();
+  // Load persistent data from disk and Cloud Firestore
+  await loadData();
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
